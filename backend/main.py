@@ -1,46 +1,45 @@
-from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+from fastapi import FastAPI, UploadFile, File
+import shutil
+import uuid
 
-from database import users
-from auth import verify_google_token
-
-load_dotenv()
+from ocr import extract_text
+from models import llama_process, deepseek_process, qwen_process
+from consensus import consensus_output
 
 app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-@app.post("/auth/google")
-async def google_login(data: dict):
-    token = data.get("token")
+@app.post("/upload")
+async def upload_image(file: UploadFile = File(...)):
+    file_id = str(uuid.uuid4())
+    path = f"temp_{file_id}.png"
 
-    user_info = verify_google_token(token)
-    if not user_info:
-        raise HTTPException(status_code=401, detail="Invalid token")
+    with open(path, "wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
 
-    email = user_info["email"]
-    name = user_info["name"]
+    # STEP 1: OCR
+    raw_text = extract_text(path)
 
-    user = users.find_one({"email": email})
+    # STEP 2: AI Models
+    llama = llama_process(raw_text)
+    deepseek = deepseek_process(raw_text)
+    qwen = qwen_process(raw_text)
 
-    if not user:
-        users.insert_one({
-            "email": email,
-            "name": name,
-            "role": "viewer"  # default role
-        })
-        role = "viewer"
-    else:
-        role = user["role"]
+    # STEP 3: Consensus
+    final = consensus_output([llama, deepseek, qwen])
 
     return {
-        "email": email,
-        "role": role
+        "ocr_text": raw_text,
+        "llama": llama,
+        "deepseek": deepseek,
+        "qwen": qwen,
+        "final_output": final
     }
